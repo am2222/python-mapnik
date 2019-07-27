@@ -23,9 +23,9 @@
 #define MAPNIK_PYTHON_BINDING_SVG_INCLUDED
 
 // mapnik
-#include <mapnik/parse_transform.hpp>
+#include <mapnik/proj_transform.hpp>
 #include <mapnik/symbolizer.hpp>
-#include <mapnik/value_error.hpp>
+#include <mapnik/value/error.hpp>
 
 #pragma GCC diagnostic push
 #include <mapnik/warning_ignore.hpp>

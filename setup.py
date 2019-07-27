@@ -3,6 +3,7 @@
 import os
 import os.path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,7 +22,12 @@ def check_output(args):
     if PYTHON3:
         # check_output returns bytes in PYTHON3.
         output = output.decode()
-    return output.rstrip('\n')
+    return output.rstrip('\r\n')
+
+
+def split_args(paths):
+	""" Split arguments """
+    return [s.strip('"') for s in shlex.split(paths, False, False)]
 
 
 def clean_boost_name(name):
@@ -34,8 +40,8 @@ def clean_boost_name(name):
 def find_boost_library(_id):
     suffixes = [
         "",  # standard naming
-        "-mt"  # former naming schema for multithreading build
-    ]
+        "-mt", # former naming schema for multithreading build
+    ] + os.environ.get("BOOST_LIB_SUFFIX", "").split(os.pathsep)
     if "python" in _id:
         # Debian naming convention for versions installed in parallel
         suffixes.insert(0, "-py%d%d" % (sys.version_info.major,
@@ -48,6 +54,9 @@ def find_boost_library(_id):
         if lib is not None:
             return name
 
+        lib = os.path.join(os.environ.get("BOOST_LIB_PATH", ""), name)
+        if os.path.exists(lib + '.lib'):
+            return lib
 
 def get_boost_library_names():
     wanted = ['boost_python', 'boost_thread', 'boost_system']
@@ -64,6 +73,8 @@ def get_boost_library_names():
         for name in missing:
             msg += ("\nMissing {} boost library, try to add its name with "
                     "{}_LIB environment var.").format(name, name.upper())
+        msg += "\nOr try setting BOOST_LIB_PATH and BOOST_LIB_SUFFIX."
+                    
         raise EnvironmentError(msg)
     return found
 
@@ -81,24 +92,24 @@ class WhichBoostCommand(Command):
     def run(self):
         print("\n".join(get_boost_library_names()))
 
-
-cflags = sysconfig.get_config_var('CFLAGS')
-sysconfig._config_vars['CFLAGS'] = re.sub(
-    ' +', ' ', cflags.replace('-g ', '').replace('-Os', '').replace('-arch i386', ''))
-opt = sysconfig.get_config_var('OPT')
-sysconfig._config_vars['OPT'] = re.sub(
-    ' +', ' ', opt.replace('-g ', '').replace('-Os', ''))
-ldshared = sysconfig.get_config_var('LDSHARED')
-sysconfig._config_vars['LDSHARED'] = re.sub(
-    ' +', ' ', ldshared.replace('-g ', '').replace('-Os', '').replace('-arch i386', ''))
-ldflags = sysconfig.get_config_var('LDFLAGS')
-sysconfig._config_vars['LDFLAGS'] = re.sub(
-    ' +', ' ', ldflags.replace('-g ', '').replace('-Os', '').replace('-arch i386', ''))
-pycflags = sysconfig.get_config_var('PY_CFLAGS')
-sysconfig._config_vars['PY_CFLAGS'] = re.sub(
-    ' +', ' ', pycflags.replace('-g ', '').replace('-Os', '').replace('-arch i386', ''))
-sysconfig._config_vars['CFLAGSFORSHARED'] = ''
-os.environ['ARCHFLAGS'] = ''
+if os.name == 'posix':
+    cflags = sysconfig.get_config_var('CFLAGS')
+    sysconfig._config_vars['CFLAGS'] = re.sub(
+        ' +', ' ', cflags.replace('-g ', '').replace('-Os', '').replace('-arch i386', ''))
+    opt = sysconfig.get_config_var('OPT')
+    sysconfig._config_vars['OPT'] = re.sub(
+        ' +', ' ', opt.replace('-g ', '').replace('-Os', ''))
+    ldshared = sysconfig.get_config_var('LDSHARED')
+    sysconfig._config_vars['LDSHARED'] = re.sub(
+        ' +', ' ', ldshared.replace('-g ', '').replace('-Os', '').replace('-arch i386', ''))
+    ldflags = sysconfig.get_config_var('LDFLAGS')
+    sysconfig._config_vars['LDFLAGS'] = re.sub(
+        ' +', ' ', ldflags.replace('-g ', '').replace('-Os', '').replace('-arch i386', ''))
+    pycflags = sysconfig.get_config_var('PY_CFLAGS')
+    sysconfig._config_vars['PY_CFLAGS'] = re.sub(
+        ' +', ' ', pycflags.replace('-g ', '').replace('-Os', '').replace('-arch i386', ''))
+    sysconfig._config_vars['CFLAGSFORSHARED'] = ''
+    os.environ['ARCHFLAGS'] = ''
 
 if os.environ.get("MASON_BUILD", "false") == "true":
     # run bootstrap.sh to get mason builds
@@ -106,19 +117,19 @@ if os.environ.get("MASON_BUILD", "false") == "true":
     mapnik_config = 'mason_packages/.link/bin/mapnik-config'
     mason_build = True
 else:
-    mapnik_config = 'mapnik-config'
+    mapnik_config = shutil.which('mapnik-config')
+    if not mapnik_config:   
+        raise Exception('mapnik-config command not found')
     mason_build = False
 
 
 linkflags = []
 lib_path = os.path.join(check_output([mapnik_config, '--prefix']),'lib')
-linkflags.extend(check_output([mapnik_config, '--libs']).split(' '))
-linkflags.extend(check_output([mapnik_config, '--ldflags']).split(' '))
-linkflags.extend(check_output([mapnik_config, '--dep-libs']).split(' '))
-linkflags.extend([
-'-lmapnik-wkt',
-'-lmapnik-json',
-] + ['-l%s' % i for i in get_boost_library_names()])
+bin_path = os.path.join(check_output([mapnik_config, '--prefix']),'bin')
+linkflags.extend(split_args(check_output([mapnik_config, '--ldflags'])))
+linkflags.extend(split_args(check_output([mapnik_config, '--libs'])))
+linkflags.extend(split_args(check_output([mapnik_config, '--dep-libs'])))
+linkflags.extend(get_boost_library_names())
 
 # Dynamically make the mapnik/paths.py file
 f_paths = open('mapnik/paths.py', 'w')
@@ -173,12 +184,12 @@ else:
         mapnik_lib_path = lib_path + os.environ.get('LIB_DIR_NAME')
     else:
         mapnik_lib_path = lib_path + "/mapnik"
-    f_paths.write("mapniklibpath = '{path}'\n".format(path=mapnik_lib_path))
+    f_paths.write("mapniklibpath = r'{path}'\n".format(path=os.path.realpath(mapnik_lib_path)))
     f_paths.write('mapniklibpath = os.path.normpath(mapniklibpath)\n')
     f_paths.write(
-        "inputpluginspath = '{path}'\n".format(path=input_plugin_path))
+        "inputpluginspath = r'{path}'\n".format(path=os.path.realpath(input_plugin_path)))
     f_paths.write(
-        "fontscollectionpath = '{path}'\n".format(path=font_path))
+        "fontscollectionpath = r'{path}'\n".format(path=os.path.realpath(font_path)))
     f_paths.write(
         "__all__ = [mapniklibpath,inputpluginspath,fontscollectionpath]\n")
     f_paths.close()
@@ -221,9 +232,12 @@ if mason_build:
         except shutil.Error:
             pass
 
-extra_comp_args = check_output([mapnik_config, '--cflags']).split(' ')
+extra_comp_args = split_args(check_output([mapnik_config, '--cflags']))
 
 extra_comp_args = list(filter(lambda arg: arg != "-fvisibility=hidden", extra_comp_args))
+
+extra_comp_args.append('/W1')
+extra_comp_args.append('/wd4068')
 
 if os.environ.get("PYCAIRO", "false") == "true":
     try:
@@ -241,7 +255,7 @@ if sys.platform == 'darwin':
     # would is hard to silence via pragma
     extra_comp_args.append('-Wno-parentheses-equality')
     linkflags.append('-mmacosx-version-min=10.11')
-else:
+elif 'linux' in sys.platform:
     linkflags.append('-lrt')
     linkflags.append('-Wl,-z,origin')
     linkflags.append('-Wl,-rpath=$ORIGIN/lib')
